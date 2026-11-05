@@ -7,7 +7,8 @@
 """
 import argparse
 import json
-import os
+import re
+from pathlib import Path
 import time
 
 import torch
@@ -28,30 +29,48 @@ def evaluate(model, loader, device):
     return correct / total
 
 
-def main():
-    p = argparse.ArgumentParser()
+def parse_args(argv=None):
+    p = argparse.ArgumentParser(description="CIFAR-10 üzerinde tek bir CNN deneyi eğitir.")
     p.add_argument("--name", required=True)
     p.add_argument("--epochs", type=int, default=15)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--augment", action="store_true")
     p.add_argument("--bn", action="store_true")
     p.add_argument("--dropout", type=float, default=0.0)
-    args = p.parse_args()
+    p.add_argument("--data-dir", default="data", help="CIFAR-10 veri dizini")
+    p.add_argument("--results-dir", default="results", help="JSON sonuç dizini")
+    p.add_argument("--models-dir", default="models", help="Model kayıt dizini")
+    p.add_argument("--batch-size", type=int, default=128)
+    p.add_argument("--workers", type=int, default=2, help="Veri yükleme işçisi; 0 ana süreç")
+    p.add_argument("--seed", type=int, default=42)
+    args = p.parse_args(argv)
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", args.name):
+        p.error("--name yalnızca harf, rakam, alt çizgi ve tire içerebilir.")
+    if args.epochs < 1 or args.batch_size < 1 or args.workers < 0:
+        p.error("--epochs ve --batch-size pozitif, --workers sıfır veya pozitif olmalı.")
+    if not 0 < args.lr < float("inf") or not 0 <= args.dropout < 1:
+        p.error("--lr pozitif ve sonlu, --dropout [0, 1) aralığında olmalı.")
+    return args
 
-    torch.manual_seed(42)
+
+def main(argv=None):
+    args = parse_args(argv)
+    torch.manual_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Cihaz: {device}")
 
-    train_loader, test_loader = get_loaders(augment=args.augment)
+    train_loader, test_loader = get_loaders(augment=args.augment, batch_size=args.batch_size,
+                                             root=args.data_dir, num_workers=args.workers)
     model = SmallCNN(use_bn=args.bn, dropout=args.dropout).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     criterion = nn.CrossEntropyLoss()
 
-    os.makedirs("results", exist_ok=True)
-    os.makedirs("models", exist_ok=True)
+    results_dir, models_dir = Path(args.results_dir), Path(args.models_dir)
+    results_dir.mkdir(parents=True, exist_ok=True)
+    models_dir.mkdir(parents=True, exist_ok=True)
     history = {"train_loss": [], "test_acc": []}
-    best_acc, start = 0.0, time.time()
+    best_acc, start = -1.0, time.time()
 
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -73,11 +92,11 @@ def main():
 
         if acc > best_acc:
             best_acc = acc
-            torch.save(model.state_dict(), f"models/{args.name}.pt")
+            torch.save(model.state_dict(), models_dir / f"{args.name}.pt")
 
     result = {"name": args.name, "args": vars(args), "best_acc": best_acc,
               "seconds": round(time.time() - start), "history": history}
-    with open(f"results/{args.name}.json", "w") as f:
+    with open(results_dir / f"{args.name}.json", "w") as f:
         json.dump(result, f, indent=2)
     print(f"Bitti. En iyi doğruluk: {best_acc:.4f}")
 
