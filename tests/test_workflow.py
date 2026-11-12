@@ -21,7 +21,8 @@ class WorkflowTests(unittest.TestCase):
     def test_invalid_training_arguments(self):
         for options in [['--epochs', '0'], ['--workers', '-1'],
                         ['--dropout', '1'], ['--lr', 'nan'],
-                        ['--name', '../outside']]:
+                        ['--name', '../outside'], ['--val-fraction', '0'],
+                        ['--val-fraction', '1'], ['--val-fraction', 'nan']]:
             with self.subTest(options=options), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as error:
                     train.parse_args(['--name', 'test', *options])
@@ -57,9 +58,10 @@ class WorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             results, models, plots = [root / name for name in ('results', 'models', 'plots')]
-            with patch.object(train, 'get_loaders', return_value=(loader, loader)) as load:
+            with patch.object(train, 'get_training_loaders', return_value=(loader, loader)) as load:
                 # Zero accuracy must still save the first checkpoint.
-                with patch.object(train, 'evaluate', return_value=0.0):
+                with patch.object(train, 'evaluate', return_value=0.0), \
+                        patch.object(train, 'get_test_loader', return_value=loader):
                     train.main(['--name', 'test', '--epochs', '1', '--bn',
                                 '--dropout', '0.3', '--workers', '0',
                                 '--results-dir', str(results), '--models-dir', str(models),
@@ -68,15 +70,15 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual(load.call_args.kwargs['root'], str(root / 'data'))
             self.assertTrue((models / 'test.pt').is_file())
             result = json.loads((results / 'test.json').read_text())
-            self.assertEqual(result['best_acc'], 0.0)
+            self.assertEqual(result['best_val_acc'], 0.0)
             self.assertEqual(len(result['history']['train_loss']), 1)
-            with patch.object(evaluate, 'get_loaders', return_value=(loader, loader)):
+            with patch.object(evaluate, 'get_test_loader', return_value=loader):
                 evaluate.main(['--results-dir', str(results), '--models-dir', str(models),
                                '--output-dir', str(plots), '--workers', '0'])
             for name in ('curves.png', 'confusion_matrix.png'):
                 self.assertGreater((plots / name).stat().st_size, 1000)
             (models / 'test.pt').unlink()
-            with patch.object(evaluate, 'get_loaders', side_effect=AssertionError('download')):
+            with patch.object(evaluate, 'get_test_loader', side_effect=AssertionError('download')):
                 evaluate.main(['--results-dir', str(results), '--curves-only'])
             with self.assertRaisesRegex(SystemExit, 'Model bulunamadı'):
                 evaluate.main(['--results-dir', str(results), '--models-dir', str(models)])

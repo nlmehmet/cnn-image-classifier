@@ -20,7 +20,9 @@ kullanılabilir.
 
 - **Veri işleme:** CIFAR-10 indirme, normalizasyon ve isteğe bağlı veri artırma.
 - **Esnek mimari:** Batch Normalization ve Dropout seçenekleri.
-- **Deney takibi:** Epoch bazında kayıp, test doğruluğu ve en iyi modelin kaydı.
+- **Deney takibi:** Epoch bazında kayıp, doğrulama doğruluğu ve en iyi modelin kaydı.
+- **Model seçimi:** Eğitim/doğrulama ayrımı ve eğitim sonunda tek test değerlendirmesi.
+- **Tahmin:** Kayıtlı modelle tek görüntü üzerinde en yüksek skorlu sınıflar.
 - **Analiz:** Karşılaştırma tablosu, eğitim eğrileri ve karışıklık matrisi.
 - **Çalıştırma:** CUDA mevcutsa GPU, aksi durumda CPU desteği.
 
@@ -43,12 +45,17 @@ Model üç evrişim bloğu ve bir sınıflandırıcıdan oluşur:
 
 Veri artırma etkin olduğunda rastgele kırpma ve yatay çevirme uygulanır.
 Varsayılan eğitim ayarları 15 epoch, 128 batch boyutu, 0.001 öğrenme oranı
-ve 42 seed değeridir.
+ve 42 seed değeridir. Yeni eğitimlerde 50.000 eğitim görüntüsünün %10'u
+doğrulamaya ayrılır (45.000 eğitim / 5.000 doğrulama); testteki 10.000 görüntü
+model seçimine katılmaz. `--val-fraction` ve `--seed` ile ayrım ayarlanabilir.
+Aynı seed aynı ayrımı üretir; doğrulama görüntülerine rastgele veri artırma uygulanmaz.
 
 ## Deney sonuçları
 
 Aşağıdaki tablo depodaki `results/*.json` kayıtlarını özetler. Doğruluk,
-her deneyde eğitim boyunca gözlenen en yüksek test doğruluğudur.
+her deneyde eğitim boyunca gözlenen en yüksek test doğruluğudur. Bu kayıtlar
+**eski eğitim yöntemine** aittir; yeni doğrulama ayrımıyla henüz gerçek veri
+eğitimi yapılmamıştır. Yeni sonuçlarla doğrudan karşılaştırılmamalıdır.
 
 | Deney | Veri artırma | BatchNorm | Dropout | En iyi test doğruluğu |
 |---|---|---|---|---|
@@ -81,9 +88,10 @@ doğru sınıflandırılmış, 140'ı dog olarak tahmin edilmiştir.
 
 Deneyler tek seed ile yürütülmüştür; sonuçların değişkenliğini değerlendirmek
 için birden fazla seed ile tekrar gerekir. En iyi epoch ayrı bir doğrulama kümesi
-yerine test doğruluğuna göre seçildiği için raporlanan sonuçlar iyimser olabilir.
-Daha sağlam bir karşılaştırma için eğitim/doğrulama ayrımı yapılmalı ve test kümesi
-son değerlendirmeye ayrılmalıdır.
+yerine test doğruluğuna göre seçildiği için yukarıdaki eski sonuçlar iyimser olabilir.
+Yeni eğitim akışında bu sorun giderilmiştir: en iyi epoch doğrulama doğruluğuyla
+seçilir, kayıtlı model yeniden yüklenir ve test kümesinde eğitim sonunda bir kez ölçülür.
+Çoklu seed deneyleri ve istatistiksel belirsizlik raporlaması henüz eklenmemiştir.
 
 ## Kurulum ve kullanım
 Python 3.12 ile doğrulanmıştır. Proje dizininde bir sanal ortam oluşturun:
@@ -111,7 +119,13 @@ python src/train.py --help
 CIFAR-10 ilk çalıştırmada indirilir; indirme için internet erişimi gerekir.
 CUDA varsa GPU, yoksa CPU kullanılır. `--workers 0`, veriyi ana süreçte yükler.
 Eğitim varsayılan olarak 15 epoch sürer. Aynı deney adıyla yeniden çalıştırmak
-ilgili JSON sonucunu ve model dosyasını yeniler.
+ilgili JSON sonucunu ve model dosyasını yeniler. Eski deneyleri korumak için yeni
+bir ad veya `runs/` altında ayrı dizinler kullanın.
+
+Yeni JSON sonuçlarında `best_val_acc` model seçimi için en iyi doğrulama
+başarısını, `test_acc` ise seçilen modelin eğitim sonundaki test başarısını içerir.
+Epoch geçmişi `history.val_acc` altında tutulur; test kümesi her epoch ölçülmez.
+Yeni `.pt` kayıtları ağırlıkların yanında mimari ayarlarını ve seçilen epoch'u içerir.
 
 ### Özel çalışma dizinleri
 
@@ -130,9 +144,31 @@ Depodaki kayıtlı sonuçları, model indirmeden veya eğitim yapmadan görünt�
 python src/evaluate.py --curves-only --output-dir /tmp/cnn-plots
 ```
 Tam değerlendirme için `python src/evaluate.py` çalıştırın. Bu komut, sonuçlar
-arasındaki en iyi deneye ait `models/<deney>.pt` dosyasını ve CIFAR-10 verisini
+arasındaki doğrulama başarısı en yüksek deneye ait (eski kayıtlarda test başarısı kullanılır) `models/<deney>.pt` dosyasını ve CIFAR-10 verisini
 ister. Model dosyaları Git deposuna dahil değildir. Grafikler varsayılan olarak
 sonuç dizinine yazılır; farklı bir yer için `--output-dir` kullanın.
+Eski ve yeni sonuçlar aynı dizindeyse tam değerlendirmede `--name deneme` ile
+tek bir deney seçin veya sonuçları ayrı dizinlerde tutun. `--curves-only` her iki
+biçimi de okuyabilir ve eğrilerde ölçümün hangi kümeye ait olduğunu belirtir.
+Tam değerlendirme test kümesinde karışıklık matrisi üretir; model seçimini değiştirmez.
+
+### Tek görüntüden tahmin
+
+Önce kendi modelinizi eğitin; depo hazır model ağırlıkları içermez. Ardından:
+
+```bash
+python src/predict.py --image ornek.jpg --model runs/models/deneme.pt --top-k 3
+```
+
+Komut görüntüyü RGB biçimine ve 32 × 32 boyutuna dönüştürür; eğitimde kullanılan
+normalizasyonu uygular ve en yüksek skorlu sınıfları yazdırır. PNG ve JPEG gibi
+Pillow'un okuyabildiği görüntüler kullanılabilir; gri tonlu görüntüler de desteklenir.
+Yeni ve eski model kayıtları yüklenebilir; BatchNorm ayarı otomatik belirlenir.
+`--top-k` 1–10 arasında seçilebilir. Tahmin sırasında veri kümesi indirilmez.
+
+Yazdırılan yüzdeler softmax model skorlarıdır; kalibre edilmiş güven ölçümleri değildir.
+Model yalnızca CIFAR-10'un 10 sınıfı arasında seçim yapar; farklı bir içerik için de
+bu sınıflardan birini üretir. Gerçek fotoğraflardaki başarısı ayrıca ölçülmemiştir.
 
 ### Toplu deneyler
 
@@ -150,7 +186,8 @@ kullanın. Betik herhangi bir çalışma dizininden çağrılabilir; proje dizin
 ## Testler
 
 Testler sentetik veriyle çalışır; indirme veya GPU gerektirmez. Eğitim döngüsü,
-model kaydı ve yükleme, grafik üretimi, parametre doğrulama ve toplu çalıştırma
+model kaydı ve yükleme, grafik üretimi, veri ayrımı, test kümesinin yalnızca
+son ölçümde kullanılması, tek görüntü tahmini, parametre doğrulama ve toplu çalıştırma
 betiğinin farklı bir dizinden çağrılması kontrol edilir:
 
 ```bash
@@ -165,6 +202,8 @@ python -m unittest discover -s tests -v
 | `src/model.py` | CNN mimarisi ve yapılandırılabilir bloklar |
 | `src/train.py` | Eğitim, öğrenme oranı zamanlayıcısı ve model kaydı |
 | `src/evaluate.py` | Deney karşılaştırması ve görselleştirme |
+| `src/checkpoint.py` | Yeni ve eski model kayıtlarını yükleme |
+| `src/predict.py` | Tek görüntü için sınıf tahmini |
 | `run_all.sh` | Üç yapılandırmayı sırayla çalıştıran betik |
 | `tests/` | İnternet gerektirmeyen iş akışı testleri |
 | `results/` | Depoda bulunan deney kayıtları ve grafikler |
@@ -173,8 +212,8 @@ python -m unittest discover -s tests -v
 
 ## Geliştirme yönleri
 
-- Ayrı doğrulama kümesi ve çoklu seed ile daha güvenilir deney karşılaştırması.
+- Çoklu seed ile deney karşılaştırması ve belirsizlik raporlaması.
 - Eğitim yapılandırmalarının genişletilmesi ve daha uzun eğitimlerin incelenmesi.
-- Tek görüntü üzerinde tahmin için komut satırı aracı.
+- Model skorlarının kalibrasyonu ve farklı görüntülerde başarı analizi.
 
 Bu maddeler geliştirme önerileridir; mevcut sürümün özellikleri değildir.
